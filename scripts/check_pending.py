@@ -141,8 +141,14 @@ def do_login(page, username, password):
 
     if not smart_fill(page, email_selectors, username):
         raise RuntimeError("Não foi possível localizar o campo de e-mail/usuário na tela de login.")
+    print(f"[debug] campo de usuário/e-mail preenchido (comprimento={len(username)})")
+    # Tab para disparar blur/validação de formulários React/MUI antes do próximo campo.
+    page.keyboard.press("Tab")
+
     if not smart_fill(page, password_selectors, password):
         raise RuntimeError("Não foi possível localizar o campo de senha na tela de login.")
+    print(f"[debug] campo de senha preenchido (comprimento={len(password)})")
+    page.keyboard.press("Tab")
 
     submit_selectors = [
         "button[type='submit']",
@@ -150,18 +156,39 @@ def do_login(page, username, password):
         "button:has-text('Acessar')",
         "button:has-text('Login')",
     ]
+    submit_locator = None
     for selector in submit_selectors:
         locator = page.locator(selector).first
         try:
             if locator.is_visible(timeout=1500):
-                locator.click()
+                submit_locator = locator
                 break
         except PlaywrightTimeoutError:
             continue
-    else:
+
+    if submit_locator is None:
         page.locator("input[type='password']").first.press("Enter")
+    else:
+        # Alguns formulários (ex: MUI) mantêm o botão "disabled" até a validação
+        # do lado do cliente rodar; espera um pouco antes de clicar.
+        for _ in range(10):
+            if submit_locator.get_attribute("disabled") is None:
+                break
+            page.wait_for_timeout(300)
+        else:
+            print("[aviso] botão de login permaneceu desabilitado após preencher os campos.", file=sys.stderr)
+            save_debug_artifacts(page, "login_button_still_disabled")
+        submit_locator.click(timeout=5000)
 
     page.wait_for_load_state("networkidle", timeout=20000)
+
+    if is_login_form_visible(page):
+        save_debug_artifacts(page, "login_failed_after_submit")
+        raise RuntimeError(
+            "Login não teve sucesso: o formulário de login ainda está visível após submeter. "
+            "Verifique CONDFY_USERNAME/CONDFY_PASSWORD e os artefatos de debug "
+            "'login_failed_after_submit.png/html'."
+        )
 
 
 def save_debug_artifacts(page, label):
