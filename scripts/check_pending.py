@@ -1,0 +1,302 @@
+"""
+Robô de monitoramento de solicitações faciais pendentes no Condfy.
+
+Faz login no painel web.condfy.com.br, visita uma lista de URLs de
+"Solicitações > Facial" e verifica se existem pessoas com status
+"Pendente". Novas pendências (ainda não notificadas anteriormente)
+são enviadas por e-mail. O estado de o-que-já-foi-notificado é
+persistido em um arquivo JSON (STATE_FILE) para não notificar a
+mesma pendência repetidamente a cada execução.
+
+Variáveis de ambiente esperadas:
+  CONDFY_USERNAME, CONDFY_PASSWORD  - credenciais de login do Condfy
+  GMAIL_USER, GMAIL_APP_PASSWORD    - conta Gmail usada para enviar o e-mail
+  NOTIFY_EMAIL                      - destinatário da notificação
+  URLS_FILE   (opcional) - caminho do arquivo com as URLs (padrão: config/urls.txt)
+  STATE_FILE  (opcional) - caminho do arquivo de estado (padrão: state/notified.json)
+  DEBUG_DIR   (opcional) - pasta para salvar screenshot/HTML em caso de erro (padrão: debug_artifacts)
+"""
+
+import json
+import os
+import re
+import smtplib
+import sys
+from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+ROOT = Path(__file__).resolve().parent.parent
+URLS_FILE = Path(os.environ.get("URLS_FILE", ROOT / "config" / "urls.txt"))
+STATE_FILE = Path(os.environ.get("STATE_FILE", ROOT / "state" / "notified.json"))
+DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", ROOT / "debug_artifacts"))
+
+DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}")
+LICENSE_RE = re.compile(r"/licencas/(\d+)/")
+STATE_MAX_AGE_DAYS = 60
+
+# JS injetado na página: localiza cada "linha" da lista pelo badge de status
+# "Pendente" e sobe pelos ancestrais até achar um bloco que também contenha
+# uma data (o que indica que chegamos ao contêiner da linha inteira).
+# Essa abordagem evita depender de nomes de classes/IDs específicos do Condfy,
+# que não pudemos inspecionar diretamente (acesso à internet bloqueado neste
+# ambiente de desenvolvimento).
+EXTRACT_ROWS_JS = r"""
+() => {
+  const dateRe = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/;
+  const isPendingBadge = (el) =>
+    el.children.length === 0 && el.textContent.trim().toLowerCase() === 'pendente';
+  const badges = Array.from(document.querySelectorAll('*')).filter(isPendingBadge);
+  const rows = [];
+  const seen = new Set();
+  for (const badge of badges) {
+    let node = badge;
+    let rowNode = null;
+    for (let i = 0; i < 10 && node; i++) {
+      node = node.parentElement;
+      if (!node) break;
+      const text = node.innerText || '';
+      if (dateRe.test(text) && text.length < 2000) {
+        rowNode = node;
+        break;
+      }
+    }
+    if (rowNode && !seen.has(rowNode)) {
+      seen.add(rowNode);
+      rows.push(rowNode.innerText.trim());
+    }
+  }
+  return rows;
+}
+"""
+
+
+def load_urls():
+    urls = []
+    for line in URLS_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            urls.append(line)
+    if not urls:
+        raise RuntimeError(f"Nenhuma URL encontrada em {URLS_FILE}")
+    return urls
+
+
+def load_state():
+    if STATE_FILE.exists():
+        return json.loads(STATE_FILE.read_text(encoding="utf-8") or "{}")
+    return {}
+
+
+def save_state(state):
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def prune_state(state, now):
+    cutoff = now - timedelta(days=STATE_MAX_AGE_DAYS)
+    kept = {}
+    for key, notified_at in state.items():
+        try:
+            when = datetime.fromisoformat(notified_at)
+        except ValueError:
+            continue
+        if when >= cutoff:
+            kept[key] = notified_at
+    return kept
+
+
+def is_login_form_visible(page):
+    try:
+        return page.locator("input[type='password']").first.is_visible(timeout=3000)
+    except PlaywrightTimeoutError:
+        return False
+
+
+def smart_fill(page, selectors, value):
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            if locator.is_visible(timeout=1500):
+                locator.fill(value)
+                return True
+        except PlaywrightTimeoutError:
+            continue
+    return False
+
+
+def do_login(page, username, password):
+    email_selectors = [
+        "input[type='email']",
+        "input[name*='email' i]",
+        "input[name*='user' i]",
+        "input[placeholder*='mail' i]",
+        "input[placeholder*='usu' i]",
+    ]
+    password_selectors = ["input[type='password']"]
+
+    if not smart_fill(page, email_selectors, username):
+        raise RuntimeError("Não foi possível localizar o campo de e-mail/usuário na tela de login.")
+    if not smart_fill(page, password_selectors, password):
+        raise RuntimeError("Não foi possível localizar o campo de senha na tela de login.")
+
+    submit_selectors = [
+        "button[type='submit']",
+        "button:has-text('Entrar')",
+        "button:has-text('Acessar')",
+        "button:has-text('Login')",
+    ]
+    for selector in submit_selectors:
+        locator = page.locator(selector).first
+        try:
+            if locator.is_visible(timeout=1500):
+                locator.click()
+                break
+        except PlaywrightTimeoutError:
+            continue
+    else:
+        page.locator("input[type='password']").first.press("Enter")
+
+    page.wait_for_load_state("networkidle", timeout=20000)
+
+
+def save_debug_artifacts(page, label):
+    try:
+        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+        safe_label = re.sub(r"[^a-zA-Z0-9_-]", "_", label)
+        page.screenshot(path=str(DEBUG_DIR / f"{safe_label}.png"), full_page=True)
+        (DEBUG_DIR / f"{safe_label}.html").write_text(page.content(), encoding="utf-8")
+    except Exception as exc:  # melhor esforço; não deve interromper o fluxo principal
+        print(f"[aviso] falha ao salvar artefatos de debug para {label}: {exc}", file=sys.stderr)
+
+
+def parse_row(row_text, license_id, url):
+    lines = [line.strip() for line in row_text.split("\n") if line.strip()]
+    name = lines[0] if lines else "(nome não identificado)"
+    date_match = DATE_RE.search(row_text)
+    date_str = date_match.group(0) if date_match else "(data não identificada)"
+    operation = "(operação não identificada)"
+    for candidate in ("Inclusão", "Exclusão", "Alteração"):
+        if candidate in row_text:
+            operation = candidate
+            break
+    key = f"{license_id}|{name}|{operation}|{date_str}"
+    return {
+        "key": key,
+        "license_id": license_id,
+        "name": name,
+        "operation": operation,
+        "date": date_str,
+        "url": url,
+    }
+
+
+def collect_pending(page, url):
+    license_match = LICENSE_RE.search(url)
+    license_id = license_match.group(1) if license_match else "desconhecida"
+
+    page.goto(url, wait_until="networkidle", timeout=30000)
+
+    if is_login_form_visible(page):
+        raise RuntimeError(f"Sessão não autenticada ao acessar {url} (formulário de login reapareceu).")
+
+    row_texts = page.evaluate(EXTRACT_ROWS_JS)
+    pending = [parse_row(text, license_id, url) for text in row_texts]
+
+    total_match = re.search(r"Total de solicita[çc][õo]es:\s*(\d+)", page.content())
+    if total_match and int(total_match.group(1)) > 0 and not pending:
+        print(
+            f"[aviso] {url} reporta total > 0 mas nenhuma linha 'Pendente' foi extraída; "
+            "a estrutura da página pode ter mudado. Verifique os artefatos de debug.",
+            file=sys.stderr,
+        )
+        save_debug_artifacts(page, f"license_{license_id}_zero_extracted")
+
+    return pending
+
+
+def send_email(new_items):
+    gmail_user = os.environ["GMAIL_USER"]
+    gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
+    notify_email = os.environ["NOTIFY_EMAIL"]
+
+    lines = [
+        "Foram encontradas novas pendências de aprovação facial no Condfy:",
+        "",
+    ]
+    for item in new_items:
+        lines.append(
+            f"- {item['name']} | Licença {item['license_id']} | {item['operation']} | {item['date']}"
+        )
+        lines.append(f"  {item['url']}")
+        lines.append("")
+
+    body = "\n".join(lines)
+    subject = f"Condfy: {len(new_items)} pendência(s) de aprovação facial"
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = gmail_user
+    msg["To"] = notify_email
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(gmail_user, gmail_app_password)
+        server.sendmail(gmail_user, [notify_email], msg.as_string())
+
+
+def main():
+    urls = load_urls()
+    state = load_state()
+    now = datetime.now()
+
+    username = os.environ["CONDFY_USERNAME"]
+    password = os.environ["CONDFY_PASSWORD"]
+
+    all_pending = []
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+        )
+        page = context.new_page()
+
+        try:
+            page.goto(urls[0], wait_until="networkidle", timeout=30000)
+            if is_login_form_visible(page):
+                do_login(page, username, password)
+        except Exception:
+            save_debug_artifacts(page, "login_failure")
+            raise
+
+        for url in urls:
+            try:
+                all_pending.extend(collect_pending(page, url))
+            except Exception as exc:
+                print(f"[erro] falha ao processar {url}: {exc}", file=sys.stderr)
+                save_debug_artifacts(page, f"error_{LICENSE_RE.search(url).group(1) if LICENSE_RE.search(url) else 'unknown'}")
+
+        browser.close()
+
+    new_items = [item for item in all_pending if item["key"] not in state]
+
+    if new_items:
+        print(f"Encontradas {len(new_items)} nova(s) pendência(s). Enviando e-mail...")
+        send_email(new_items)
+        for item in new_items:
+            state[item["key"]] = now.isoformat()
+    else:
+        print("Nenhuma pendência nova encontrada.")
+
+    state = prune_state(state, now)
+    save_state(state)
+
+
+if __name__ == "__main__":
+    main()

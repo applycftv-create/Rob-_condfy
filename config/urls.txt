@@ -1,0 +1,5 @@
+# Uma URL por linha. Linhas em branco ou iniciadas com # são ignoradas.
+https://web.condfy.com.br/licencas/21093/solicitacoes/faciais
+https://web.condfy.com.br/licencas/29140/solicitacoes/faciais
+https://web.condfy.com.br/licencas/23064/solicitacoes/faciais
+https://web.condfy.com.br/licencas/21642/solicitacoes/faciais

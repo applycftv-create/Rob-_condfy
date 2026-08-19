@@ -1,0 +1,60 @@
+name: Verificar solicitações faciais pendentes (Condfy)
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: check-pending-condfy
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: |
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Executar verificação
+        env:
+          CONDFY_USERNAME: ${{ secrets.CONDFY_USERNAME }}
+          CONDFY_PASSWORD: ${{ secrets.CONDFY_PASSWORD }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+        run: python scripts/check_pending.py
+
+      - name: Salvar artefatos de depuração (se houver)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts-${{ github.run_id }}
+          path: debug_artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Persistir estado de notificações já enviadas
+        run: |
+          if [ -n "$(git status --porcelain state/notified.json)" ]; then
+            git config user.name "condfy-bot"
+            git config user.email "condfy-bot@users.noreply.github.com"
+            git add state/notified.json
+            git commit -m "chore: atualizar estado de notificações"
+            git push
+          else
+            echo "Nenhuma mudança de estado para commitar."
+          fi
