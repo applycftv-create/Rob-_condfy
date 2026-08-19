@@ -8,10 +8,10 @@ são enviadas por e-mail. O estado de o-que-já-foi-notificado é
 persistido em um arquivo JSON (STATE_FILE) para não notificar a
 mesma pendência repetidamente a cada execução.
 
-Variáveis de ambiente esperadas:
+Variáveis de ambiente esperadas (podem vir de um arquivo .env na raiz do projeto):
   CONDFY_USERNAME, CONDFY_PASSWORD  - credenciais de login do Condfy
   GMAIL_USER, GMAIL_APP_PASSWORD    - conta Gmail usada para enviar o e-mail
-  NOTIFY_EMAIL                      - destinatário da notificação
+  NOTIFY_EMAIL                      - destinatário(s) da notificação
   URLS_FILE   (opcional) - caminho do arquivo com as URLs (padrão: config/urls.txt)
   STATE_FILE  (opcional) - caminho do arquivo de estado (padrão: state/notified.json)
   DEBUG_DIR   (opcional) - pasta para salvar screenshot/HTML em caso de erro (padrão: debug_artifacts)
@@ -26,9 +26,11 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
 URLS_FILE = Path(os.environ.get("URLS_FILE", ROOT / "config" / "urls.txt"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", ROOT / "state" / "notified.json"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", ROOT / "debug_artifacts"))
