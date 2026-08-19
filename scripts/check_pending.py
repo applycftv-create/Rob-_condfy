@@ -39,6 +39,17 @@ DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}")
 LICENSE_RE = re.compile(r"/licencas/(\d+)/")
 STATE_MAX_AGE_DAYS = 60
 
+# Textos de interface que não são nomes de pessoas — se a extração acabar
+# capturando um desses como "nome" (ex: o dropdown de filtro), descartamos a
+# linha em vez de notificar algo que não é uma pendência real.
+UI_CHROME_NAMES = {
+    "filtrar por status",
+    "filtrar por operação",
+    "filtrar por operacao",
+    "total de solicitações",
+    "total de solicitacoes",
+}
+
 # JS injetado na página: localiza cada "linha" da lista pelo badge de status
 # "Pendente" e sobe pelos ancestrais até achar um bloco que também contenha
 # uma data (o que indica que chegamos ao contêiner da linha inteira).
@@ -48,8 +59,15 @@ STATE_MAX_AGE_DAYS = 60
 EXTRACT_ROWS_JS = r"""
 () => {
   const dateRe = /\d{2}\/\d{2}\/\d{4}\s+\d{2}:\d{2}/;
+  // Exclui o valor exibido pelo dropdown "Filtrar por status" (que também
+  // mostra o texto "Pendente" quando esse é o filtro selecionado) — só nos
+  // interessam badges de status dentro das linhas da lista, não o filtro.
+  const isInsideDropdown = (el) =>
+    !!el.closest('[role="combobox"], [role="button"], [aria-haspopup], select, [role="listbox"], [role="option"]');
   const isPendingBadge = (el) =>
-    el.children.length === 0 && el.textContent.trim().toLowerCase() === 'pendente';
+    el.children.length === 0 &&
+    el.textContent.trim().toLowerCase() === 'pendente' &&
+    !isInsideDropdown(el);
   const badges = Array.from(document.querySelectorAll('*')).filter(isPendingBadge);
   const rows = [];
   const seen = new Set();
@@ -238,6 +256,7 @@ def collect_pending(page, url):
 
     row_texts = page.evaluate(EXTRACT_ROWS_JS)
     pending = [parse_row(text, license_id, url) for text in row_texts]
+    pending = [item for item in pending if item["name"].strip().lower() not in UI_CHROME_NAMES]
 
     total_match = re.search(r"Total de solicita[çc][õo]es:\s*(\d+)", page.content())
     if total_match and int(total_match.group(1)) > 0 and not pending:
