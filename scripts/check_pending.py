@@ -217,10 +217,18 @@ def collect_pending(page, url):
     return pending
 
 
+def parse_recipients(raw):
+    """Aceita um ou mais e-mails separados por vírgula, ponto-e-vírgula e/ou quebras de linha."""
+    recipients = [addr.strip() for addr in re.split(r"[,;\n]+", raw) if addr.strip()]
+    if not recipients:
+        raise RuntimeError("NOTIFY_EMAIL está vazio.")
+    return recipients
+
+
 def send_email(new_items):
     gmail_user = os.environ["GMAIL_USER"]
     gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
-    notify_email = os.environ["NOTIFY_EMAIL"]
+    recipients = parse_recipients(os.environ["NOTIFY_EMAIL"])
 
     lines = [
         "Foram encontradas novas pendências de aprovação facial no Condfy:",
@@ -239,11 +247,11 @@ def send_email(new_items):
     msg = MIMEText(body, "plain", "utf-8")
     msg["Subject"] = subject
     msg["From"] = gmail_user
-    msg["To"] = notify_email
+    msg["To"] = ", ".join(recipients)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(gmail_user, gmail_app_password)
-        server.sendmail(gmail_user, [notify_email], msg.as_string())
+        server.sendmail(gmail_user, recipients, msg.as_string())
 
 
 def main():

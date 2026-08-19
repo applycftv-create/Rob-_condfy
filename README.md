@@ -30,7 +30,7 @@ cadastre:
 | `CONDFY_PASSWORD` | Senha do Condfy |
 | `GMAIL_USER` | Conta Gmail que envia a notificação |
 | `GMAIL_APP_PASSWORD` | ["Senha de app"](https://myaccount.google.com/apppasswords) do Gmail (não é a senha normal da conta — requer verificação em duas etapas ativada) |
-| `NOTIFY_EMAIL` | Endereço que recebe o alerta |
+| `NOTIFY_EMAIL` | Endereço(s) que recebem o alerta. Pode ser um único e-mail ou vários, um por linha (ou separados por vírgula/`;`) |
 
 ## Editar a lista de URLs monitoradas
 
