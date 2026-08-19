@@ -1,8 +1,12 @@
 name: Verificar solicitações faciais pendentes (Condfy)
 
 on:
-  schedule:
-    - cron: "*/20 * * * *"
+  # Agendamento automático DESATIVADO propositalmente: o robô roda via cron
+  # no servidor próprio (ver README), para não duplicar notificações.
+  # Descomente as linhas abaixo se quiser voltar a usar o GitHub Actions
+  # como o sistema principal (e desative o cron do servidor nesse caso).
+  # schedule:
+  #   - cron: "*/20 * * * *"
   workflow_dispatch: {}
 
 permissions:
