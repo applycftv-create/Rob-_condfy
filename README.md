@@ -73,8 +73,38 @@ Edite o `.env` e preencha com valores reais:
 | `GMAIL_USER` | Conta Gmail que envia a notificação |
 | `GMAIL_APP_PASSWORD` | ["Senha de app"](https://myaccount.google.com/apppasswords) do Gmail (requer verificação em duas etapas ativada na conta) |
 | `NOTIFY_EMAIL` | Endereço(s) que recebem o alerta — um ou vários, separados por vírgula |
+| `WHATSAPP_RECIPIENTS` | Opcional. Notificação por WhatsApp via CallMeBot — ver seção abaixo |
 
 O arquivo `.env` nunca é enviado ao git (está no `.gitignore`).
+
+## Notificação por WhatsApp (opcional, via CallMeBot)
+
+O [CallMeBot](https://www.callmebot.com/blog/free-api-whatsapp-messages/) é
+um serviço gratuito e não-oficial que permite enviar mensagens de WhatsApp
+via uma chamada HTTP simples. Cada pessoa que for receber notificações
+precisa ativar o próprio número uma única vez:
+
+1. Salve o número `+34 644 59 71 65` nos contatos do celular.
+2. Envie pelo WhatsApp, para esse número, a mensagem exata:
+   ```
+   I allow callmebot to send me messages
+   ```
+3. Em poucos minutos, o CallMeBot responde com uma **API key** (um número).
+4. Adicione no `.env` o telefone (com código do país, só números) e a
+   apikey recebida, no formato `telefone:apikey`. Para várias pessoas,
+   separe por vírgula:
+   ```
+   WHATSAPP_RECIPIENTS=5511999999999:123456,5521888888888:654321
+   ```
+
+Se `WHATSAPP_RECIPIENTS` estiver vazio ou não definido, o robô simplesmente
+pula o envio por WhatsApp (só manda e-mail).
+
+> **Limitações do CallMeBot** (por ser um serviço não-oficial e gratuito):
+> pode ficar instável em horários de pico, tem limite de ~1 mensagem a cada
+> poucos segundos por número (o robô já espera automaticamente entre
+> envios), e mensagens muito longas são cortadas. Para uso crítico/produção
+> em maior escala, considere migrar para a API oficial da Meta.
 
 ### 3. Testar manualmente
 

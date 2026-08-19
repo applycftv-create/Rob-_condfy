@@ -11,7 +11,11 @@ mesma pendência repetidamente a cada execução.
 Variáveis de ambiente esperadas (podem vir de um arquivo .env na raiz do projeto):
   CONDFY_USERNAME, CONDFY_PASSWORD  - credenciais de login do Condfy
   GMAIL_USER, GMAIL_APP_PASSWORD    - conta Gmail usada para enviar o e-mail
-  NOTIFY_EMAIL                      - destinatário(s) da notificação
+  NOTIFY_EMAIL                      - destinatário(s) da notificação por e-mail
+  WHATSAPP_RECIPIENTS (opcional) - destinatário(s) via CallMeBot, formato
+                                    "telefone:apikey", um ou mais separados
+                                    por vírgula/quebra de linha. Se vazio,
+                                    o envio por WhatsApp é pulado.
   URLS_FILE   (opcional) - caminho do arquivo com as URLs (padrão: config/urls.txt)
   STATE_FILE  (opcional) - caminho do arquivo de estado (padrão: state/notified.json)
   DEBUG_DIR   (opcional) - pasta para salvar screenshot/HTML em caso de erro (padrão: debug_artifacts)
@@ -22,6 +26,9 @@ import os
 import re
 import smtplib
 import sys
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -389,6 +396,68 @@ def send_email(new_items):
         server.sendmail(gmail_user, recipients, msg.as_string())
 
 
+CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+CALLMEBOT_MAX_MESSAGE_LENGTH = 2000
+CALLMEBOT_DELAY_BETWEEN_SENDS = 3  # segundos, evita rate-limit da API
+
+
+def parse_whatsapp_recipients(raw):
+    """Formato: telefone:apikey — um ou mais, separados por vírgula/;/quebra de linha."""
+    recipients = []
+    for entry in re.split(r"[,;\n]+", raw):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            print(
+                f"[aviso] entrada inválida em WHATSAPP_RECIPIENTS (esperado telefone:apikey): {entry}",
+                file=sys.stderr,
+            )
+            continue
+        phone, apikey = entry.split(":", 1)
+        recipients.append((phone.strip(), apikey.strip()))
+    return recipients
+
+
+def build_whatsapp_text(grouped, total_count):
+    lines = [f"*Condfy* — {total_count} pendência(s) de aprovação facial:", ""]
+    for client_name, items in grouped.items():
+        lines.append(f"*{client_name}* ({len(items)})")
+        for item in items:
+            lines.append(f"- {item['name']} | {item['operation']} | {item['date']}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    if len(text) > CALLMEBOT_MAX_MESSAGE_LENGTH:
+        text = text[: CALLMEBOT_MAX_MESSAGE_LENGTH - 20] + "\n... (lista truncada)"
+    return text
+
+
+def send_whatsapp(new_items):
+    raw = os.environ.get("WHATSAPP_RECIPIENTS", "").strip()
+    if not raw:
+        return
+
+    recipients = parse_whatsapp_recipients(raw)
+    if not recipients:
+        return
+
+    client_names = load_client_names()
+    grouped = group_by_client(new_items, client_names)
+    text = build_whatsapp_text(grouped, len(new_items))
+
+    for index, (phone, apikey) in enumerate(recipients):
+        params = urllib.parse.urlencode({"phone": phone, "text": text, "apikey": apikey})
+        url = f"{CALLMEBOT_URL}?{params}"
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:
+                body = response.read().decode("utf-8", errors="ignore").strip()
+                print(f"[whatsapp] {phone}: {body[:200]}")
+        except Exception as exc:
+            print(f"[aviso] falha ao enviar WhatsApp para {phone}: {exc}", file=sys.stderr)
+        if index < len(recipients) - 1:
+            time.sleep(CALLMEBOT_DELAY_BETWEEN_SENDS)
+
+
 def main():
     urls = load_urls()
     state = load_state()
@@ -432,6 +501,7 @@ def main():
     if new_items:
         print(f"Encontradas {len(new_items)} nova(s) pendência(s). Enviando e-mail...")
         send_email(new_items)
+        send_whatsapp(new_items)
         for item in new_items:
             state[item["key"]] = now.isoformat()
     else:
