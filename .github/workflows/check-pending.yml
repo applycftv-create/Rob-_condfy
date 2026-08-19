@@ -50,12 +50,16 @@ jobs:
 
       - name: Persistir estado de notificações já enviadas
         run: |
-          if [ -n "$(git status --porcelain state/notified.json)" ]; then
-            git config user.name "condfy-bot"
-            git config user.email "condfy-bot@users.noreply.github.com"
-            git add state/notified.json
+          # state/notified.json está no .gitignore (evita conflito de git pull
+          # em deploys via cron, onde o arquivo é um cache local por servidor).
+          # Aqui no Actions o container é efêmero, então precisamos forçar o
+          # commit para persistir o estado entre execuções.
+          git config user.name "condfy-bot"
+          git config user.email "condfy-bot@users.noreply.github.com"
+          git add -f state/notified.json
+          if git diff --cached --quiet; then
+            echo "Nenhuma mudança de estado para commitar."
+          else
             git commit -m "chore: atualizar estado de notificações"
             git push
-          else
-            echo "Nenhuma mudança de estado para commitar."
           fi

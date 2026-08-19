@@ -4,3 +4,4 @@ __pycache__/
 debug_artifacts/
 .env
 *.log
+state/notified.json
