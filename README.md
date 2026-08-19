@@ -15,7 +15,26 @@ ainda não haviam sido notificadas.
 3. Compara com `state/notified.json` (pendências já notificadas). Só envia
    e-mail para pendências novas — evita ficar mandando o mesmo e-mail a cada
    20 minutos enquanto a pendência não é resolvida.
-4. Se houver algo novo, envia um e-mail via SMTP do Gmail para `NOTIFY_EMAIL`.
+4. Se houver algo novo, envia um e-mail em HTML (com fallback em texto puro)
+   via SMTP do Gmail para `NOTIFY_EMAIL`, agrupado por cliente/condomínio —
+   os nomes vêm de `config/clients.json`.
+
+## Nomes dos clientes/condomínios
+
+Edite `config/clients.json` para mapear o ID da licença (o número que
+aparece na URL, ex: `21093`) para o nome do cliente:
+
+```json
+{
+  "21093": "Martinelli",
+  "29140": "Barra Prime Offices",
+  "23064": "RB53",
+  "21642": "Baru Offshore"
+}
+```
+
+Se uma licença não estiver nesse arquivo, o e-mail usa `Licença <id>` como
+nome do grupo.
 
 ## Rodando em servidor/máquina próprio (via cron) — método recomendado
 

@@ -23,7 +23,9 @@ import re
 import smtplib
 import sys
 from datetime import datetime, timedelta
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -33,6 +35,7 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 URLS_FILE = Path(os.environ.get("URLS_FILE", ROOT / "config" / "urls.txt"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", ROOT / "state" / "notified.json"))
+CLIENTS_FILE = Path(os.environ.get("CLIENTS_FILE", ROOT / "config" / "clients.json"))
 DEBUG_DIR = Path(os.environ.get("DEBUG_DIR", ROOT / "debug_artifacts"))
 
 DATE_RE = re.compile(r"\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}")
@@ -91,6 +94,12 @@ EXTRACT_ROWS_JS = r"""
   return rows;
 }
 """
+
+
+def load_client_names():
+    if CLIENTS_FILE.exists():
+        return json.loads(CLIENTS_FILE.read_text(encoding="utf-8") or "{}")
+    return {}
 
 
 def load_urls():
@@ -278,29 +287,102 @@ def parse_recipients(raw):
     return recipients
 
 
+OPERATION_COLORS = {
+    "Inclusão": "#059669",
+    "Exclusão": "#dc2626",
+    "Alteração": "#d97706",
+}
+DEFAULT_OPERATION_COLOR = "#6b7280"
+
+
+def group_by_client(new_items, client_names):
+    groups = {}
+    for item in new_items:
+        client_name = client_names.get(item["license_id"], f"Licença {item['license_id']}")
+        groups.setdefault(client_name, []).append(item)
+    return dict(sorted(groups.items(), key=lambda pair: pair[0].lower()))
+
+
+def build_plain_text_body(grouped):
+    lines = ["Foram encontradas novas pendências de aprovação facial no Condfy:", ""]
+    for client_name, items in grouped.items():
+        lines.append(f"== {client_name} ==")
+        for item in items:
+            lines.append(f"- {item['name']} | {item['operation']} | {item['date']}")
+            lines.append(f"  {item['url']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_html_body(grouped, total_count):
+    client_sections = []
+    for client_name, items in grouped.items():
+        rows = []
+        for item in items:
+            color = OPERATION_COLORS.get(item["operation"], DEFAULT_OPERATION_COLOR)
+            rows.append(f"""
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid #eef0f3;">
+                  <div style="font-size:14px;font-weight:600;color:#111827;">{escape(item['name'])}</div>
+                  <div style="font-size:12px;color:#6b7280;margin-top:2px;">{escape(item['date'])}</div>
+                </td>
+                <td style="padding:10px 0;border-bottom:1px solid #eef0f3;text-align:right;white-space:nowrap;">
+                  <span style="display:inline-block;padding:2px 8px;border-radius:10px;background:{color}1a;color:{color};font-size:11px;font-weight:600;">
+                    {escape(item['operation'])}
+                  </span>
+                  <div style="margin-top:6px;">
+                    <a href="{escape(item['url'])}" style="font-size:12px;color:#2563eb;text-decoration:none;">Ver solicitação →</a>
+                  </div>
+                </td>
+              </tr>
+            """)
+        client_sections.append(f"""
+          <div style="margin-bottom:24px;">
+            <div style="font-size:15px;font-weight:700;color:#111827;padding-bottom:8px;margin-bottom:4px;border-bottom:2px solid #111827;">
+              {escape(client_name)}
+              <span style="font-weight:400;color:#6b7280;font-size:13px;">({len(items)} pendente(s))</span>
+            </div>
+            <table style="width:100%;border-collapse:collapse;">
+              {''.join(rows)}
+            </table>
+          </div>
+        """)
+
+    return f"""
+    <div style="margin:0;padding:24px;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;">
+      <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+        <div style="background:#111827;padding:20px 24px;">
+          <span style="color:#ffffff;font-size:17px;font-weight:700;">Condfy · Pendências de aprovação facial</span>
+        </div>
+        <div style="padding:24px;">
+          <p style="margin:0 0 20px;font-size:14px;color:#4b5563;">
+            Foram encontradas <strong>{total_count}</strong> nova(s) pendência(s) de aprovação facial:
+          </p>
+          {''.join(client_sections)}
+        </div>
+        <div style="padding:14px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">
+          Robô Condfy — verificação automática a cada 20 minutos.
+        </div>
+      </div>
+    </div>
+    """
+
+
 def send_email(new_items):
     gmail_user = os.environ["GMAIL_USER"]
     gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
     recipients = parse_recipients(os.environ["NOTIFY_EMAIL"])
+    client_names = load_client_names()
 
-    lines = [
-        "Foram encontradas novas pendências de aprovação facial no Condfy:",
-        "",
-    ]
-    for item in new_items:
-        lines.append(
-            f"- {item['name']} | Licença {item['license_id']} | {item['operation']} | {item['date']}"
-        )
-        lines.append(f"  {item['url']}")
-        lines.append("")
-
-    body = "\n".join(lines)
+    grouped = group_by_client(new_items, client_names)
     subject = f"Condfy: {len(new_items)} pendência(s) de aprovação facial"
 
-    msg = MIMEText(body, "plain", "utf-8")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = gmail_user
     msg["To"] = ", ".join(recipients)
+    msg.attach(MIMEText(build_plain_text_body(grouped), "plain", "utf-8"))
+    msg.attach(MIMEText(build_html_body(grouped, len(new_items)), "html", "utf-8"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(gmail_user, gmail_app_password)
