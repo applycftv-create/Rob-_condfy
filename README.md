@@ -23,6 +23,10 @@ ainda não haviam sido notificadas.
 > para a conta que hospeda este repositório (ver seção "GitHub Actions"
 > abaixo). Se isso for resolvido no futuro, o workflow em
 > `.github/workflows/check-pending.yml` já está pronto para uso.
+>
+> Para rodar em uma VM gratuita da Oracle Cloud (Always Free), siga o guia
+> completo em [`docs/deploy-oracle-cloud.md`](docs/deploy-oracle-cloud.md).
+> Os passos abaixo servem para qualquer servidor/máquina Linux.
 
 ### 1. Clonar e instalar dependências
 
