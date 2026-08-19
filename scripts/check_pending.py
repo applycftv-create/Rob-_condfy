@@ -180,6 +180,11 @@ def do_login(page, username, password):
             save_debug_artifacts(page, "login_button_still_disabled")
         submit_locator.click(timeout=5000)
 
+    # Captura logo após o clique, antes de um possível reload que "engoliria"
+    # um toast/alerta de erro antes que déssemos tempo de vê-lo.
+    page.wait_for_timeout(2000)
+    save_debug_artifacts(page, "login_immediate_after_click")
+
     page.wait_for_load_state("networkidle", timeout=20000)
 
     if is_login_form_visible(page):
